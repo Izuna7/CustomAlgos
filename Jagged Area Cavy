@@ -1,0 +1,254 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+public class ArenaGenerator : MonoBehaviour
+{
+    [Header("References")]
+    [SerializeField] private GameObject wallPrefab;
+
+    [Header("Arena Size")]
+    [SerializeField] private int width = 50;
+    [SerializeField] private int height = 30;
+
+    [Header("Shape")]
+    [SerializeField] private int pointsPerEdge = 6;
+    [SerializeField] private int maxDeviation = 5;
+
+    [Header("Wall")]
+    [SerializeField] private int wallThickness = 2;
+
+    private readonly HashSet<Vector2Int> wallTiles = new();
+
+    [ContextMenu("Generate Arena")]
+    public void GenerateArena()
+    {
+        ClearArena();
+
+        wallTiles.Clear();
+
+        List<Vector2Int> perimeter = GeneratePerimeter();
+
+        BuildWallThickness(perimeter);
+
+        SpawnWalls();
+    }
+
+    [ContextMenu("Clear Arena")]
+    public void ClearArena()
+    {
+        for (int i = transform.childCount - 1; i >= 0; i--)
+        {
+#if UNITY_EDITOR
+            DestroyImmediate(transform.GetChild(i).gameObject);
+#else
+            Destroy(transform.GetChild(i).gameObject);
+#endif
+        }
+    }
+
+    [ContextMenu("Regenerate Arena")]
+    public void RegenerateArena()
+    {
+        GenerateArena();
+    }
+
+    private void SpawnWalls()
+    {
+        foreach (Vector2Int pos in wallTiles)
+        {
+            Instantiate(
+                wallPrefab,
+                new Vector3(pos.x, pos.y, 0),
+                Quaternion.identity,
+                transform);
+        }
+    }
+
+    private List<Vector2Int> GeneratePerimeter()
+    {
+        List<Vector2Int> perimeter = new();
+
+        AddEdge(
+            perimeter,
+            GenerateHorizontalEdge(
+                0,
+                width,
+                true,
+                false));
+
+        AddEdge(
+            perimeter,
+            GenerateVerticalEdge(
+                width,
+                0,
+                height,
+                false,
+                false));
+
+        AddEdge(
+            perimeter,
+            GenerateHorizontalEdge(
+                height,
+                width,
+                false,
+                true));
+
+        AddEdge(
+            perimeter,
+            GenerateVerticalEdge(
+                0,
+                height,
+                0,
+                true,
+                true));
+
+        return perimeter;
+    }
+
+    private List<Vector2Int> GenerateHorizontalEdge(
+        int baseY,
+        int endX,
+        bool leftToRight,
+        bool invertDeviation)
+    {
+        List<Vector2Int> controlPoints = new();
+
+        for (int i = 0; i <= pointsPerEdge; i++)
+        {
+            float t = i / (float)pointsPerEdge;
+
+            int x = Mathf.RoundToInt(t * endX);
+
+            if (!leftToRight)
+                x = endX - x;
+
+            int deviation =
+                Random.Range(0, maxDeviation + 1);
+
+            int y =
+                invertDeviation
+                ? baseY - deviation
+                : baseY + deviation;
+
+            controlPoints.Add(
+                new Vector2Int(x, y));
+        }
+
+        return BuildInterpolatedEdge(controlPoints);
+    }
+
+    private List<Vector2Int> GenerateVerticalEdge(
+        int baseX,
+        int startY,
+        int endY,
+        bool bottomToTop,
+        bool invertDeviation)
+    {
+        List<Vector2Int> controlPoints = new();
+
+        for (int i = 0; i <= pointsPerEdge; i++)
+        {
+            float t = i / (float)pointsPerEdge;
+
+            int y =
+                Mathf.RoundToInt(
+                    Mathf.Lerp(startY, endY, t));
+
+            if (bottomToTop)
+                y = endY - (y - startY);
+
+            int deviation =
+                Random.Range(0, maxDeviation + 1);
+
+            int x =
+                invertDeviation
+                ? baseX - deviation
+                : baseX + deviation;
+
+            controlPoints.Add(
+                new Vector2Int(x, y));
+        }
+
+        return BuildInterpolatedEdge(controlPoints);
+    }
+
+    private List<Vector2Int> BuildInterpolatedEdge(
+        List<Vector2Int> controlPoints)
+    {
+        List<Vector2Int> result = new();
+
+        for (int i = 0; i < controlPoints.Count - 1; i++)
+        {
+            DrawLine(
+                controlPoints[i],
+                controlPoints[i + 1],
+                result);
+        }
+
+        return result;
+    }
+
+    private void DrawLine(
+        Vector2Int start,
+        Vector2Int end,
+        List<Vector2Int> output)
+    {
+        int x = start.x;
+        int y = start.y;
+
+        int dx = Mathf.Abs(end.x - start.x);
+        int dy = Mathf.Abs(end.y - start.y);
+
+        int sx = start.x < end.x ? 1 : -1;
+        int sy = start.y < end.y ? 1 : -1;
+
+        int err = dx - dy;
+
+        while (true)
+        {
+            output.Add(new Vector2Int(x, y));
+
+            if (x == end.x && y == end.y)
+                break;
+
+            int e2 = err * 2;
+
+            if (e2 > -dy)
+            {
+                err -= dy;
+                x += sx;
+            }
+
+            if (e2 < dx)
+            {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    private void AddEdge(
+        List<Vector2Int> perimeter,
+        List<Vector2Int> edge)
+    {
+        perimeter.AddRange(edge);
+    }
+
+    private void BuildWallThickness(
+        List<Vector2Int> perimeter)
+    {
+        foreach (Vector2Int point in perimeter)
+        {
+            for (int x = -wallThickness + 1; x < wallThickness; x++)
+            {
+                for (int y = -wallThickness + 1; y < wallThickness; y++)
+                {
+                    wallTiles.Add(
+                        new Vector2Int(
+                            point.x + x,
+                            point.y + y));
+                }
+            }
+        }
+    }
+}
