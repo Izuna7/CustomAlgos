@@ -1,0 +1,170 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Tilemaps;
+
+public class LevelGenerator : MonoBehaviour
+{
+    enum gridSpace { empty, floor };
+    gridSpace[,] grid;
+    int roomHeight, roomWidth;
+    Vector2 roomSizeWorldUnits = new Vector2(30, 30);
+    float worldUnitsInOneGridCell = 1;
+
+    struct walker
+    {
+        public Vector2 dir;
+        public Vector2 pos;
+    }
+
+    List<walker> walkers;
+    float chanceWalkerChangeDir = 0.5f, chanceWalkerSpawn = 0.05f;
+    float chanceWalkerDestoy = 0.05f;
+    int maxWalkers = 10;
+    float percentToFill = 0.3f;  // Raise this (e.g. 0.4f) for more open space, lower it for tighter corridors
+
+    public Tilemap floorTilemap;
+    public Tilemap wallTilemap;
+    public TileBase floorTile;
+    public TileBase wallTile;
+
+    void Start()
+    {
+        Setup();
+        FillWithWalls();     // step 1: solid wall rectangle
+        CreateFloors();      // step 2: walkers carve paths
+        SpawnLevel();        // step 3: carve out floor, remove walls there
+    }
+
+    void Setup()
+    {
+        roomHeight = Mathf.RoundToInt(roomSizeWorldUnits.x / worldUnitsInOneGridCell);
+        roomWidth = Mathf.RoundToInt(roomSizeWorldUnits.y / worldUnitsInOneGridCell);
+        grid = new gridSpace[roomWidth, roomHeight];
+
+        // default everything to empty (wall rectangle is handled in tilemap directly)
+        for (int x = 0; x < roomWidth; x++)
+            for (int y = 0; y < roomHeight; y++)
+                grid[x, y] = gridSpace.empty;
+
+        walkers = new List<walker>();
+        walker newWalker = new walker();
+        newWalker.dir = RandomDirection();
+        newWalker.pos = new Vector2(Mathf.RoundToInt(roomWidth / 2.0f),
+                                    Mathf.RoundToInt(roomHeight / 2.0f));
+        walkers.Add(newWalker);
+    }
+
+    void FillWithWalls()
+    {
+        wallTilemap.ClearAllTiles();
+        floorTilemap.ClearAllTiles();
+
+        for (int x = 0; x < roomWidth; x++)
+            for (int y = 0; y < roomHeight; y++)
+                wallTilemap.SetTile(new Vector3Int(x, y, 0), wallTile);
+    }
+
+    void CreateFloors()
+    {
+        int iterations = 0;
+        do
+        {
+            foreach (walker myWalker in walkers)
+                grid[(int)myWalker.pos.x, (int)myWalker.pos.y] = gridSpace.floor;
+
+            // chance: destroy a walker
+            int numberChecks = walkers.Count;
+            for (int i = 0; i < numberChecks; i++)
+            {
+                if (Random.value < chanceWalkerDestoy && walkers.Count > 1)
+                {
+                    walkers.RemoveAt(i);
+                    break;
+                }
+            }
+
+            // chance: change direction
+            for (int i = 0; i < walkers.Count; i++)
+            {
+                if (Random.value < chanceWalkerChangeDir)
+                {
+                    walker thisWalker = walkers[i];
+                    thisWalker.dir = RandomDirection();
+                    walkers[i] = thisWalker;
+                }
+            }
+
+            // chance: spawn new walker
+            numberChecks = walkers.Count;
+            for (int i = 0; i < numberChecks; i++)
+            {
+                if (Random.value < chanceWalkerSpawn && walkers.Count < maxWalkers)
+                {
+                    walker newWalker = new walker();
+                    newWalker.dir = RandomDirection();
+                    newWalker.pos = walkers[i].pos;
+                    walkers.Add(newWalker);
+                }
+            }
+
+            // move walkers
+            for (int i = 0; i < walkers.Count; i++)
+            {
+                walker thisWalker = walkers[i];
+                thisWalker.pos += thisWalker.dir;
+                walkers[i] = thisWalker;
+            }
+
+            // clamp to border
+            for (int i = 0; i < walkers.Count; i++)
+            {
+                walker thisWalker = walkers[i];
+                thisWalker.pos.x = Mathf.Clamp(thisWalker.pos.x, 1, roomWidth - 2);
+                thisWalker.pos.y = Mathf.Clamp(thisWalker.pos.y, 1, roomHeight - 2);
+                walkers[i] = thisWalker;
+            }
+
+            if ((float)NumberOfFloors() / (float)grid.Length > percentToFill)
+                break;
+
+            iterations++;
+        } while (iterations < 100000);
+    }
+
+    void SpawnLevel()
+    {
+        for (int x = 0; x < roomWidth; x++)
+        {
+            for (int y = 0; y < roomHeight; y++)
+            {
+                if (grid[x, y] == gridSpace.floor)
+                {
+                    Vector3Int pos = new Vector3Int(x, y, 0);
+                    wallTilemap.SetTile(pos, null);          // punch hole in wall
+                    floorTilemap.SetTile(pos, floorTile);   // place floor
+                }
+            }
+        }
+    }
+
+    Vector2 RandomDirection()
+    {
+        int choice = Mathf.FloorToInt(Random.value * 3.99f);
+        switch (choice)
+        {
+            case 0: return Vector2.down;
+            case 1: return Vector2.left;
+            case 2: return Vector2.up;
+            default: return Vector2.right;
+        }
+    }
+
+    int NumberOfFloors()
+    {
+        int count = 0;
+        foreach (gridSpace space in grid)
+            if (space == gridSpace.floor) count++;
+        return count;
+    }
+}
