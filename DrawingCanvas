@@ -1,0 +1,283 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class DrawingCanvas : MonoBehaviour
+{
+    [Header("Canvas")]
+    public Image canvasImage;
+    public Image templateImage;
+
+    [Header("Mask")]
+    public Texture2D templateTexture;
+
+    [Header("Brush")]
+    public Color brushColor = Color.red;
+    public int brushRadius = 8;
+    [Tooltip("Opacity of painted strokes. 1 = fully solid chosen color, lower = more see-through.")]
+    [Range(0f, 1f)] public float brushOpacity = 1f;
+    public float canvasSize;
+    public Transform canvasRef;
+
+    [Header("UI Sliders (optional)")]
+    [Tooltip("Drag a Slider here to control brushRadius live. Suggested slider range: 2 to 30.")]
+    public Slider brushSizeSlider;
+    [Tooltip("Drag a Slider here to control noiseScale live. Suggested slider range: 0.02 to 0.5.")]
+    public Slider noiseScaleSlider;
+    [Tooltip("Drag a Slider here to control brushOpacity live. Suggested slider range: 0 to 1.")]
+    public Slider brushOpacitySlider;
+    public Slider sizeOfCanvasSlider;
+
+
+    [Header("Crayon Effect")]
+    [Tooltip("Frequency of the grain/edge noise. Lower = larger, blobbier grain. Higher = finer, sandier grain.")]
+    public float noiseScale = 0.15f;
+    [Tooltip("How jagged the circle edge is. 0 = perfect circle, 1 = very rough/torn edge.")]
+    [Range(0f, 1f)] public float edgeRoughness = 0.35f;
+    [Tooltip("How much of the brush area actually gets filled in. 1 = fully solid, lower = more grainy gaps. Painted pixels are always your exact brushColor, fully opaque.")]
+    [Range(0.3f, 1f)] public float coverage = 0.8f;
+
+    private Texture2D drawingTexture;
+    private Sprite drawingSprite;
+    private Color[] clearPixels;
+
+    // Per-stroke noise offsets so every stroke has a slightly different grain pattern
+    private float edgeOffsetX, edgeOffsetY;
+    private float grainOffsetX, grainOffsetY;
+
+    void Start()
+    {
+        // Create transparent drawing texture
+        drawingTexture = new Texture2D(
+            templateTexture.width,
+            templateTexture.height,
+            TextureFormat.RGBA32,
+            false);
+        Color[] pixels = new Color[drawingTexture.width * drawingTexture.height];
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] = Color.clear;
+        drawingTexture.SetPixels(pixels);
+        drawingTexture.Apply();
+        clearPixels = pixels; // cache for reuse by ClearCanvas()
+
+        // Create sprite for drawing
+        drawingSprite = Sprite.Create(
+            drawingTexture,
+            new Rect(0, 0, drawingTexture.width, drawingTexture.height),
+            new Vector2(0.5f, 0.5f),
+            100f);
+        canvasImage.sprite = drawingSprite;
+        canvasImage.color = Color.white;
+        canvasImage.preserveAspect = true;
+        canvasImage.SetNativeSize();
+
+        // Create sprite for template
+        Sprite templateSprite = Sprite.Create(
+            templateTexture,
+            new Rect(0, 0, templateTexture.width, templateTexture.height),
+            new Vector2(0.5f, 0.5f),
+            100f);
+        templateImage.sprite = templateSprite;
+        templateImage.color = new Color(1f, 1f, 1f, 0.3f);
+        templateImage.preserveAspect = true;
+        templateImage.SetNativeSize();
+
+        // Make both images exactly the same size
+        canvasImage.rectTransform.sizeDelta = templateImage.rectTransform.sizeDelta;
+
+        RandomizeStrokeNoise();
+
+        // --- Slider hookup ---
+        if (brushSizeSlider != null)
+        {
+            brushSizeSlider.SetValueWithoutNotify(brushRadius);
+            brushSizeSlider.onValueChanged.AddListener(SetBrushSize);
+        }
+        if (noiseScaleSlider != null)
+        {
+            noiseScaleSlider.SetValueWithoutNotify(noiseScale);
+            noiseScaleSlider.onValueChanged.AddListener(SetNoiseScale);
+        }
+        if (brushOpacitySlider != null)
+        {
+            brushOpacitySlider.SetValueWithoutNotify(brushOpacity);
+            brushOpacitySlider.onValueChanged.AddListener(SetBrushOpacity);
+        }
+        if(sizeOfCanvasSlider != null)
+        {
+            sizeOfCanvasSlider.SetValueWithoutNotify(canvasSize);
+            sizeOfCanvasSlider.onValueChanged.AddListener(SetCanvasSize);
+        }
+      
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetBrushSize(float value)
+    {
+        brushRadius = Mathf.RoundToInt(value);
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetNoiseScale(float value)
+    {
+        noiseScale = value;
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetBrushOpacity(float value)
+    {
+        brushOpacity = value;
+    }
+
+    public void SetCanvasSize(float value)
+    {
+        canvasSize = value;
+        canvasRef.localScale = Vector3.one * canvasSize;
+    }
+
+
+    /// <summary>
+    /// Sets the brush color directly (e.g. from a color wheel picker).
+    /// Keeps RGB sliders in sync if they're also in use.
+    /// </summary>
+    public void SetBrushColor(Color color)
+    {
+        brushColor = color;
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetColorR(float value)
+    {
+        brushColor.r = value;
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetColorG(float value)
+    {
+        brushColor.g = value;
+    }
+
+    /// <summary>Hook this up to a Slider's OnValueChanged(), or call directly.</summary>
+    public void SetColorB(float value)
+    {
+        brushColor.b = value;
+    }
+
+    void Update()
+    {
+        if (Input.GetMouseButtonDown(0))
+        {
+            // New stroke -> new grain pattern so it doesn't look identical every time
+            RandomizeStrokeNoise();
+        }
+
+        if (Input.GetMouseButton(0))
+        {
+            Draw();
+        }
+    }
+
+    void RandomizeStrokeNoise()
+    {
+        edgeOffsetX = Random.Range(0f, 1000f);
+        edgeOffsetY = Random.Range(0f, 1000f);
+        grainOffsetX = Random.Range(0f, 1000f);
+        grainOffsetY = Random.Range(0f, 1000f);
+    }
+
+    void Draw()
+    {
+        RectTransform rect = canvasImage.rectTransform;
+        if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                rect,
+                Input.mousePosition,
+                null,
+                out Vector2 localPoint))
+            return;
+
+        Rect r = rect.rect;
+        float px = Mathf.InverseLerp(r.xMin, r.xMax, localPoint.x);
+        float py = Mathf.InverseLerp(r.yMin, r.yMax, localPoint.y);
+        int x = Mathf.RoundToInt(px * (drawingTexture.width - 1));
+        int y = Mathf.RoundToInt(py * (drawingTexture.height - 1));
+
+        PaintCircle(x, y);
+        drawingTexture.Apply();
+    }
+
+    void PaintCircle(int cx, int cy)
+    {
+        for (int x = -brushRadius; x <= brushRadius; x++)
+        {
+            for (int y = -brushRadius; y <= brushRadius; y++)
+            {
+                float dist = Mathf.Sqrt(x * x + y * y);
+                if (dist > brushRadius)
+                    continue;
+
+                int px = cx + x;
+                int py = cy + y;
+                if (px < 0 || py < 0 || px >= drawingTexture.width || py >= drawingTexture.height)
+                    continue;
+
+                // Only draw inside the template's visible pixels
+                if (templateTexture.GetPixel(px, py).a < 0.1f)
+                    continue;
+
+                float normalizedDist = dist / brushRadius;
+
+                // --- Rough / torn edge ---
+                // Noise pushes the effective cutoff radius in and out, so the edge
+                // isn't a clean circle - it looks torn like a crayon dragged on paper.
+                float edgeNoise = Mathf.PerlinNoise(
+                    (px + edgeOffsetX) * noiseScale,
+                    (py + edgeOffsetY) * noiseScale);
+                float edgeThreshold = 1f - edgeRoughness * edgeNoise;
+                if (normalizedDist > edgeThreshold)
+                    continue;
+
+                // --- Grain (per-pixel gap texture, not opacity) ---
+                // Instead of varying transparency (which changes how the color
+                // looks), we randomly skip some pixels inside the stroke area.
+                // That gives the same speckled, uneven-coverage look without
+                // ever altering the actual painted color.
+                float grain = Mathf.PerlinNoise(
+                    (px + grainOffsetX) * noiseScale * 3f,
+                    (py + grainOffsetY) * noiseScale * 3f);
+
+                // Pixels near the edge are more likely to be skipped than
+                // pixels near the center, so the stroke still fades out softly.
+                float fillChance = coverage * Mathf.Clamp01(1f - normalizedDist * 0.5f);
+                if (grain > fillChance)
+                    continue;
+
+                // Painted pixels are always your exact chosen color; brushOpacity
+                // controls their transparency directly (no blending involved).
+                Color strokeColor = brushColor;
+                strokeColor.a = brushOpacity;
+
+                drawingTexture.SetPixel(px, py, strokeColor);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Wipes the drawing back to fully transparent. Hook this up to a
+    /// Button's OnClick() in the Inspector to make a "Clear" button.
+    /// </summary>
+    public void ClearCanvas()
+    {
+        drawingTexture.SetPixels(clearPixels);
+        drawingTexture.Apply();
+    }
+
+    void OnDestroy()
+    {
+        if (brushSizeSlider != null)
+            brushSizeSlider.onValueChanged.RemoveListener(SetBrushSize);
+        if (noiseScaleSlider != null)
+            noiseScaleSlider.onValueChanged.RemoveListener(SetNoiseScale);
+        if (brushOpacitySlider != null)
+            brushOpacitySlider.onValueChanged.RemoveListener(SetBrushOpacity);
+    
+    }
+}
